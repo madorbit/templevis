@@ -1,0 +1,22 @@
+# Documentation
+include README.md
+include LICENSE
+
+# Test files
+recursive-include tests *.py
+recursive-include tests/data *
+
+# Example configurations and data
+recursive-include examples *
+
+# Debug output directory structure
+recursive-include data/debug README.md
+recursive-include output README.md
+
+# Exclude development and temporary files
+global-exclude *.py[cod]
+global-exclude __pycache__
+global-exclude *.so
+global-exclude .git*
+global-exclude .DS_Store
+global-exclude *.egg-info

@@ -5,6 +5,7 @@ A Python tool for processing LDS temple worker schedule PDFs and generating CSV 
 ## Overview
 
 TempleVis processes PDF schedules containing temple worker assignments and extracts:
+
 - Worker names
 - Task assignments (particularly INI tasks)
 - Time period information
@@ -30,24 +31,27 @@ The tool generates CSV reports for different time periods and provides a complet
 
 1. Python 3.8 or higher
 2. Tesseract OCR engine
+
    ```bash
    # Windows (using chocolatey)
    choco install tesseract
-   
+
    # Linux
    sudo apt-get install tesseract-ocr
-   
+
    # macOS
    brew install tesseract
    ```
+
 3. Poppler for PDF processing
+
    ```bash
    # Windows (using chocolatey)
    choco install poppler
-   
+
    # Linux
    sudo apt-get install poppler-utils
-   
+
    # macOS
    brew install poppler
    ```
@@ -106,20 +110,24 @@ The system processes schedules into five distinct time periods:
 The tool generates multiple output formats:
 
 ### CSV Files
+
 1. `complete_schedule.csv` - Full schedule with all assignments
 2. `period_1_tasks.csv` through `period_5_tasks.csv` - Tasks for each time period
 
 ### Spreadsheet Files
+
 1. `schedule.ods` - OpenDocument Spreadsheet with template formatting
 2. `schedule.xlsx` - Excel workbook with professional formatting
 
 Each output contains:
+
 - **Name** - Worker name (alphabetically sorted)
 - **Task** - Task assignment code
 - **Start Time** - Assignment start time
 - **End Time** - Assignment end time
 
 ### Spreadsheet Features
+
 - **Template-based formatting** with consistent styling
 - **Multiple sheets** - one per time period
 - **Room and Task columns** for manual annotation
@@ -132,12 +140,14 @@ Each output contains:
 ## Development Setup
 
 1. Clone the repository
+
    ```bash
    git clone https://github.com/username/templevis.git
    cd templevis
    ```
 
 2. Create a virtual environment
+
    ```bash
    python -m venv venv
    source venv/bin/activate  # Linux/macOS
@@ -145,6 +155,7 @@ Each output contains:
    ```
 
 3. Install development dependencies
+
    ```bash
    pip install -e ".[dev]"
    ```

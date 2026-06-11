@@ -78,18 +78,89 @@ class PDFTableProcessor:
             print(f"Error finding task codes: {e}")
             return []
 
+    def extract_names_from_text(self, pdf):
+        """
+        Extract names from the PDF text layer.
+        Each line in format: "# LastName, FirstName TASKS... AlphabeticalName"
+        We need the Name part (column 1).
+
+        Returns:
+            List of names in row order
+        """
+        names = []
+
+        for page in pdf.pages:
+            text = page.extract_text()
+            if not text:
+                continue
+
+            lines = text.split('\n')
+            for line in lines:
+                # Skip empty or header lines
+                if not line.strip():
+                    continue
+
+                # Lines with data start with a number
+                parts = line.strip().split(None, 1)  # Split into row_num and rest
+                if len(parts) < 2 or not parts[0].isdigit():
+                    continue
+
+                # parts[0] = row number
+                # parts[1] = "LastName, FirstName TASKS... AlphabeticalName"
+                remaining = parts[1]
+
+                # Find the comma that separates last and first name
+                comma_idx = remaining.find(',')
+                if comma_idx == -1:
+                    continue
+
+                last_name = remaining[:comma_idx].strip()
+
+                # After the comma, get everything before the first task code
+                after_comma = remaining[comma_idx + 1:].strip()
+
+                task_codes = ['CH', 'EO', 'V-', 'V�', 'LAU', 'BCR', 'TRG', 'STU', 'RDA', 'RDB', 'PM', 'INI', 'BFR', 'DRA', 'CON', 'RRA', 'NI', 'IAC', 'VC', 'VAC', 'PRE', 'MED']
+
+                # Find where the first task code starts
+                first_name_parts = []
+                words = after_comma.split()
+                for word in words:
+                    # Check if this word is a task code
+                    if any(word.startswith(code) for code in task_codes):
+                        break
+                    first_name_parts.append(word)
+
+                if not first_name_parts:
+                    continue
+
+                first_name = ' '.join(first_name_parts)
+
+                # Combine last name and first name
+                full_name = f"{last_name}, {first_name}"
+                names.append(full_name)
+
+        return names
+
     def extract_table_data(self, page_num=None):
         """
         Extract table data from PDF pages.
-        
+
         Args:
             page_num: Optional page number to process (default: None, process all pages)
-            
+
         Returns:
             DataFrame containing the table data
         """
         try:
             with pdfplumber.open(self.pdf_path) as pdf:
+                # First, extract names from text layer
+                names_from_text = self.extract_names_from_text(pdf)
+                print(f"\nExtracted {len(names_from_text)} names from text layer:")
+                for i, name in enumerate(names_from_text[:10]):
+                    print(f"  {i+1}. {name}")
+                if len(names_from_text) > 10:
+                    print(f"  ... and {len(names_from_text) - 10} more")
+
                 # Handle single page or all pages
                 pages = [pdf.pages[page_num]] if page_num is not None else pdf.pages
                 if page_num is not None and page_num >= len(pdf.pages):
@@ -226,53 +297,49 @@ class PDFTableProcessor:
                 
                 # Convert to DataFrame with all data rows
                 df = pd.DataFrame(all_data_rows, columns=columns)
-                
+
+                # Inject names from text layer into column 1
+                if len(names_from_text) > 0:
+                    print(f"\nInjecting {len(names_from_text)} names into column 1...")
+                    for idx in range(min(len(names_from_text), len(df))):
+                        df.iloc[idx, 1] = names_from_text[idx]
+
                 # Print raw data
                 print("\nRaw data sample (first 5 rows):")
                 print(df.head())
-                
+
                 # Store raw data before cleaning
                 self.raw_data = df.copy()
                 self.table_data = df.copy()  # Also store as table_data initially
-                
+
                 # Clean up the data but keep task codes and names
                 task_codes = ['CH', 'EO', 'V-', 'LAU', 'BCR', 'TRG', 'STU', 'RDA', 'PM', 'INI']
-                
-                # Get raw text for names from all pages
-                with pdfplumber.open(self.pdf_path) as pdf:
-                    names_dict = {}
-                    current_idx = 0
-                    pages_to_process = [pdf.pages[page_num]] if page_num is not None else pdf.pages
-                    for page in pages_to_process:
-                        text = page.extract_text()
-                        # Extract names from text
-                        for line in text.split('\n'):
-                            if line.strip() and line[0].isdigit():
-                                try:
-                                    # Split on first space to get index
-                                    idx_str, rest = line.split(' ', 1)
-                                    if idx_str.isdigit():
-                                        # Use running index instead of parsed index
-                                        name = rest.split(' PM')[0].strip()
-                                        if name:  # Only add non-empty names
-                                            names_dict[current_idx] = name
-                                            current_idx += 1
-                                except (ValueError, IndexError):
-                                    continue
-                
+
+                # ALWAYS use column 1 for names (it has names aligned with task assignments)
+                # Column 67 (last column) has alphabetically sorted names but NOT aligned with tasks
+                name_col_idx = 1
+                print(f"Using column 1 (Name column) for name extraction")
+
                 # Create a new DataFrame with cleaned data
                 cleaned_data = []
                 for idx, row in df.iterrows():
                     cleaned_row = {}
                     # Keep # column as is
                     cleaned_row['#'] = str(row['#']).strip()
-                    
-                    # Get name from extracted names or use original if not found
-                    name = names_dict.get(idx, str(row['Name']).strip())
+
+                    # Get name from the identified name column
+                    name = str(row.iloc[name_col_idx]).strip()
+
+                    # Remove trailing numbers from names (like "Altamirano, Ethan 23")
+                    if name and name != 'None':
+                        name_parts = name.rsplit(' ', 1)
+                        if len(name_parts) == 2 and name_parts[1].isdigit():
+                            name = name_parts[0]
+
                     # Split on first task code if present
                     if any(code in name for code in task_codes):
                         name = name.split(' CH')[0].split(' EO')[0].split(' V-')[0].split(' LAU')[0].split(' BCR')[0].split(' TRG')[0].split(' STU')[0].split(' RDA')[0].split(' PM')[0].split(' INI')[0]
-                    cleaned_row['Name'] = name if name != 'None' else row['Name']
+                    cleaned_row['Name'] = name if name != 'None' else ''
                     
                     # Clean task columns
                     for col in df.columns[2:]:
@@ -454,6 +521,7 @@ class PDFTableProcessor:
                 ini_start_col = None
                 ini_end_col = None
                 ini_task_code = None
+                in_ini_block = False
                 
                 for col_idx, cell in enumerate(row):
                     cell_str = str(cell).strip()
@@ -464,15 +532,18 @@ class PDFTableProcessor:
                             cell_str = 'INI-1'
                         
                         # Track the start and end of INI assignment
-                        if ini_start_col is None:
+                        if not in_ini_block:
+                            # Starting a new INI block
                             ini_start_col = col_idx
                             ini_task_code = cell_str
-                            print(f"Found INI task: {cell_str}")
+                            in_ini_block = True
+                            print(f"Found INI task: {cell_str} at column {col_idx}")
+                        # Update end column as we continue through the block
                         ini_end_col = col_idx
-                    elif ini_start_col is not None:
+                    elif in_ini_block:
                         # We've found the end of the INI block, process it
                         time_col = self.table_data.columns[ini_start_col]
-                        print(f"Time column: {time_col}")
+                        print(f"INI block ended. Start time column: {time_col}")
                         
                         # Detect next assignment after INI task
                         next_task = self.detect_next_assignment(row, ini_end_col)
@@ -484,6 +555,7 @@ class PDFTableProcessor:
                             # Clean up time string
                             time_str = str(time_col).strip()
                             if not time_str:
+                                in_ini_block = False
                                 ini_start_col = None
                                 ini_end_col = None
                                 continue
@@ -500,6 +572,9 @@ class PDFTableProcessor:
                                     print(f"Parsed time (24-hour): {time}")
                                 except ValueError:
                                     print(f"Failed to parse time: {time_str}")
+                                    in_ini_block = False
+                                    ini_start_col = None
+                                    ini_end_col = None
                                     continue
                             
                             # Calculate decimal hour (time is already in 24-hour format)
@@ -530,19 +605,22 @@ class PDFTableProcessor:
                                 'time_period': period,
                                 'next_task': next_task
                             })
+                            print(f"Added task for {name} in period {period}")
                             
                         except ValueError:
                             pass
                         
                         # Reset for next INI block
+                        in_ini_block = False
                         ini_start_col = None
                         ini_end_col = None
                         ini_task_code = None
                 
                 # Handle case where INI block extends to end of row
-                if ini_start_col is not None:
+                if in_ini_block and ini_start_col is not None:
                     time_col = self.table_data.columns[ini_start_col]
                     next_task = self.detect_next_assignment(row, ini_end_col)
+                    print(f"INI block extends to end of row. Start time column: {time_col}")
                     
                     try:
                         time_str = str(time_col).strip()
@@ -578,6 +656,7 @@ class PDFTableProcessor:
                                 'time_period': period,
                                 'next_task': next_task
                             })
+                            print(f"Added task for {name} in period {period} (end of row)")
                     except ValueError:
                         pass
             

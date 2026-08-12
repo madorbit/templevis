@@ -51,10 +51,8 @@ Email → SES → S3 Bucket → SNS Topic → Lambda Function → Process PDF �
 See [requirements.txt](../../requirements.txt) for the complete list. Key dependencies:
 
 - `pdfplumber`: PDF table extraction
-- `pdf2image`: PDF to image conversion
 - `openpyxl`: Excel file generation
 - `pandas`: Data manipulation
-- `pytesseract`: OCR capabilities
 
 ## Quick Start
 

@@ -5,6 +5,7 @@ This module handles the processing of PDF files using pdfplumber to extract tabl
 """
 
 import os
+import re
 import pdfplumber
 import pandas as pd
 from datetime import datetime, timedelta
@@ -22,6 +23,16 @@ class PDFTableProcessor:
         self.table_data = None
         self.names = []
         self.tasks = []
+
+    @staticmethod
+    def _normalize_name_text(value):
+        """Normalize whitespace/newlines and canonicalize 'Last, First' formatting."""
+        name = str(value)
+        name = re.sub(r'\s+', ' ', name).strip()
+        if ',' in name:
+            last_name, first_name = name.split(',', 1)
+            name = f"{last_name.strip()}, {first_name.strip()}"
+        return name
 
     def find_task_codes(self, page_num=None):
         """
@@ -328,7 +339,7 @@ class PDFTableProcessor:
                     cleaned_row['#'] = str(row['#']).strip()
 
                     # Get name from the identified name column
-                    name = str(row.iloc[name_col_idx]).strip()
+                    name = self._normalize_name_text(row.iloc[name_col_idx])
 
                     # Remove trailing numbers from names (like "Altamirano, Ethan 23")
                     if name and name != 'None':
@@ -398,7 +409,7 @@ class PDFTableProcessor:
             # Process all names
             for idx, name in enumerate(name_col):
                 # Clean up the name
-                name = str(name).strip()
+                name = self._normalize_name_text(name)
                 
                 # Skip obvious non-name entries
                 if not name or name.lower() in ['name', '#', 'none']:
@@ -507,7 +518,7 @@ class PDFTableProcessor:
             
             # Process each row
             for idx, row in self.table_data.iterrows():
-                name = str(row.iloc[1]).strip()  # Second column contains names
+                name = self._normalize_name_text(row.iloc[1])  # Second column contains names
                 
                 # Skip empty names or header rows
                 if not name or name.lower() in ['name', 'worker', '#'] or name.startswith('Page'):
@@ -733,7 +744,7 @@ class PDFTableProcessor:
                     
                     if start_hour <= task_hour < end_hour:
                         period_dfs[i].append({
-                            'Name': task['name'],
+                            'Name': self._normalize_name_text(task['name']),
                             'Task': task['task'],
                             'Start Time': task['start_time'],
                             'End Time': task['end_time']

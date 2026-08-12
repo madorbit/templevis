@@ -136,6 +136,16 @@ def lambda_handler(event, context):
             if os.path.exists(pdf_file):
                 os.remove(pdf_file)
 
+    except Exception as e:
+        logger.error(f"Unhandled lambda error: {str(e)}", exc_info=True)
+        return {
+            'statusCode': 500,
+            'body': json.dumps({
+                'message': 'Unhandled error in lambda handler',
+                'error': str(e)
+            })
+        }
+
 
 def download_from_s3(bucket: str, key: str) -> Tuple[str, str]:
     """

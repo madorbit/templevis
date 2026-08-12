@@ -7,7 +7,7 @@ in the schedule PDF, with particular focus on INI tasks.
 
 import os
 import pytest
-from templevis import PDFProcessor, PDFTableProcessor
+from templevis import PDFTableProcessor
 
 # Fixtures are now provided by conftest.py
 
@@ -127,9 +127,3 @@ def test_error_handling(table_processor):
     # Test invalid page number
     invalid_page_codes = table_processor.find_task_codes(999)
     assert invalid_page_codes == [], "Should handle invalid page number"
-    
-    # Test invalid PDF
-    invalid_processor = PDFProcessor("nonexistent.pdf")
-    assert not invalid_processor.load_pdf(), "Should handle missing PDF"
-    assert invalid_processor.find_task_codes(0) == [], \
-        "Should handle missing PDF in task code detection"

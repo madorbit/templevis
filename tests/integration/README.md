@@ -47,10 +47,7 @@ pytest tests/integration/ -v --capture=no
 Integration tests require:
 1. Sample PDF file in memory-bank directory
 2. Write access to temp directory
-3. All dependencies installed:
-   - Tesseract OCR
-   - Poppler
-   - Python packages from requirements.txt
+3. Python packages from requirements.txt
 
 ## Common Issues
 
@@ -68,9 +65,9 @@ Integration tests require:
 
 3. **Dependency Issues**
    ```
-   ModuleNotFoundError: No module named 'pdf2image'
+   ModuleNotFoundError: No module named 'templevis'
    ```
-   Solution: Install all required packages from requirements.txt
+   Solution: run tests with `PYTHONPATH=src` or install the package in editable mode
 
 ## Adding New Integration Tests
 

@@ -8,7 +8,7 @@ focusing on table extraction and data parsing capabilities.
 import os
 import pytest
 import pandas as pd
-from templevis import PDFProcessor, PDFTableProcessor
+from templevis import PDFTableProcessor
 
 # Fixtures are now provided by conftest.py
 
@@ -25,9 +25,9 @@ def test_table_extraction(table_processor):
         "Should find Smith, John in table"
 
 @pytest.mark.slow
-def test_full_table_extraction(full_pdf_processor):
+def test_full_table_extraction(full_table_processor):
     """Test table extraction functionality with full PDF."""
-    df = full_pdf_processor.extract_table_data()
+    df = full_table_processor.extract_table_data()
     assert df is not None, "Should extract table data"
     assert isinstance(df, pd.DataFrame), "Should return DataFrame"
     assert len(df) > 10, "Should have multiple rows"
@@ -42,9 +42,9 @@ def test_name_extraction(table_processor):
     assert "Smith, John" in names, "Should find test name"
 
 @pytest.mark.slow
-def test_full_name_extraction(full_pdf_processor):
+def test_full_name_extraction(full_table_processor):
     """Test name extraction functionality with full PDF."""
-    names = full_pdf_processor.get_names()
+    names = full_table_processor.get_names()
     assert isinstance(names, list), "Should return list of names"
     assert len(names) > 10, "Should find multiple names"
     assert all(isinstance(name, str) and name.strip() for name in names), \
@@ -66,9 +66,9 @@ def test_ini_task_detection(table_processor):
     assert task['start_time'] == '6:00 PM', "Task should start at 6:00 PM"
 
 @pytest.mark.slow
-def test_full_ini_task_detection(full_pdf_processor):
+def test_full_ini_task_detection(full_table_processor):
     """Test INI task detection functionality with full PDF."""
-    tasks = full_pdf_processor.get_ini_tasks()
+    tasks = full_table_processor.get_ini_tasks()
     assert isinstance(tasks, list), "Should return list of tasks"
     assert len(tasks) > 2, "Should find multiple INI tasks"
     
@@ -86,7 +86,7 @@ def test_full_ini_task_detection(full_pdf_processor):
 @pytest.mark.fast
 def test_csv_report_generation(table_processor, temp_output_dir):
     """Test CSV report generation functionality."""
-    success = table_processor.generate_csv_reports(temp_output_dir)
+    success = table_processor.generate_reports(temp_output_dir, format='csv')
     assert success, "Should generate CSV reports"
     
     # Check if files were created
@@ -124,7 +124,7 @@ def test_invalid_page_number(table_processor):
 def test_csv_report_content(table_processor, temp_output_dir):
     """Test content of generated CSV reports."""
     output_dir = temp_output_dir
-    table_processor.generate_csv_reports(output_dir)
+    table_processor.generate_reports(output_dir, format='csv')
     
     # Check complete schedule CSV
     complete_csv = os.path.join(output_dir, 'complete_schedule.csv')

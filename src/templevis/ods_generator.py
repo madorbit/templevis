@@ -182,6 +182,12 @@ class ODSGenerator:
         self.doc = OpenDocumentSpreadsheet()
         self._create_styles()
 
+    def _set_cell_text(self, cell, text):
+        """Replace existing paragraph content in a cell with a single paragraph."""
+        for paragraph in list(cell.getElementsByType(P)):
+            cell.removeChild(paragraph)
+        cell.addElement(P(text=text))
+
     def add_period_sheet(self, period_name, assignment_time, names):
         """Add a new sheet for a period with the given names."""
         if not self.doc:
@@ -194,10 +200,12 @@ class ODSGenerator:
 
         # Fill in names
         rows = table.getElementsByType(TableRow)
-        for i, name in enumerate(names, start=3):  # Start at row 3 (after headers)
+        # Row layout:
+        # 0 title, 1 empty, 2 assignment time, 3 empty, 4 headers, 5+ data rows
+        for i, name in enumerate(names, start=5):
             if i < len(rows):  # Check if row exists
                 name_cell = rows[i].getElementsByType(TableCell)[1]  # Second column for names
-                name_cell.addElement(P(text=name))
+                self._set_cell_text(name_cell, name)
 
         self.doc.spreadsheet.addElement(table)
 

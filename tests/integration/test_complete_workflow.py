@@ -35,7 +35,7 @@ def test_complete_workflow(test_pdf_path, temp_output_dir):
             "Tasks should have all required fields"
 
     # 4. Generate CSV reports
-    assert processor.generate_csv_reports(temp_output_dir), \
+    assert processor.generate_reports(temp_output_dir, format='csv'), \
         "Should generate CSV reports"
 
     # 5. Verify CSV outputs
@@ -80,9 +80,10 @@ def test_workflow_with_custom_periods(test_pdf_path, temp_output_dir, sample_per
     ]
 
     # Generate reports with custom periods
-    assert processor.generate_csv_reports(
+    assert processor.generate_reports(
         temp_output_dir, 
-        periods=custom_periods
+        periods=custom_periods,
+        format='csv'
     ), "Should generate custom period reports"
 
     # Verify custom period outputs
@@ -102,17 +103,18 @@ def test_workflow_error_handling(test_pdf_path, temp_output_dir):
     processor = PDFTableProcessor("nonexistent.pdf")
     assert processor.extract_table_data() is None, \
         "Should handle missing PDF gracefully"
-    assert not processor.generate_csv_reports(temp_output_dir), \
+    assert not processor.generate_reports(temp_output_dir, format='csv'), \
         "Should handle CSV generation failure gracefully"
 
     # Test with invalid output directory
     processor = PDFTableProcessor(test_pdf_path)
-    assert not processor.generate_csv_reports("/nonexistent/dir"), \
+    assert not processor.generate_reports("/nonexistent/dir", format='csv'), \
         "Should handle invalid output directory gracefully"
 
     # Test with invalid period configuration
     invalid_periods = [{'name': 'Invalid'}]  # Missing start/end times
-    assert not processor.generate_csv_reports(
+    assert not processor.generate_reports(
         temp_output_dir, 
-        periods=invalid_periods
+        periods=invalid_periods,
+        format='csv'
     ), "Should handle invalid period configuration gracefully"

@@ -8,8 +8,18 @@ import os
 import pytest
 from odf.opendocument import load
 from odf.table import Table, TableRow, TableCell
+from odf.text import P
 from templevis import PDFTableProcessor
 from templevis.ods_generator import ODSGenerator
+
+
+def _cell_text(cell):
+    """Return concatenated paragraph text content from an ODS cell."""
+    parts = []
+    for paragraph in cell.getElementsByType(P):
+        if paragraph.firstChild and hasattr(paragraph.firstChild, "data"):
+            parts.append(paragraph.firstChild.data)
+    return " ".join(parts).strip()
 
 @pytest.fixture
 def test_names():
@@ -39,12 +49,12 @@ def test_template_sheet_creation():
     
     # Check title
     title_cell = rows[0].getElementsByType(TableCell)[0]
-    assert "Wednesday 4th Shift Initiatory" in str(title_cell)
+    assert "Wednesday 4th Shift Initiatory" in _cell_text(title_cell)
     
     # Check assignment time
-    time_cells = rows[1].getElementsByType(TableCell)
-    assert "Assignment Time:" in str(time_cells[0])
-    assert "6:00 PM" in str(time_cells[1])
+    time_cells = rows[2].getElementsByType(TableCell)
+    assert "Assignment Time:" in _cell_text(time_cells[0])
+    assert "6:00 PM" in _cell_text(time_cells[1])
 
 def test_ods_output_generation(test_pdf_path, temp_output_dir):
     """Test complete ODS file generation."""
@@ -92,9 +102,9 @@ def test_ods_template_structure(test_names):
         
         # Verify column headers
         rows = sheet.getElementsByType(TableRow)
-        header_row = rows[2]  # Third row has headers
+        header_row = rows[4]  # Fifth row has headers
         cells = header_row.getElementsByType(TableCell)
-        headers = [str(cell) for cell in cells]
+        headers = [_cell_text(cell) for cell in cells]
         
         assert "Names" in headers
         assert "Room" in headers
@@ -103,9 +113,9 @@ def test_ods_template_structure(test_names):
         assert "Clothing" in headers
         
         # Verify names are present
-        for i, name in enumerate(test_names, start=3):  # Names start at row 3
-            name_cell = rows[i].getElementsByType(TableCell)[0]
-            assert name in str(name_cell)
+        for i, name in enumerate(test_names, start=5):
+            name_cell = rows[i].getElementsByType(TableCell)[1]
+            assert name in _cell_text(name_cell)
             
     finally:
         # Clean up
@@ -119,8 +129,8 @@ def test_ods_error_handling():
     # Test saving without creating workbook
     with pytest.raises(ValueError):
         generator.save("test.ods")
-    
-        # Test invalid sheet name
-        generator.create_workbook()
-        with pytest.raises(ValueError, match="Sheet name cannot be empty"):
-            generator.add_period_sheet("", "6:00 PM", [])
+
+    # Test invalid sheet name
+    generator.create_workbook()
+    with pytest.raises(ValueError, match="Sheet name cannot be empty"):
+        generator.add_period_sheet("", "6:00 PM", [])

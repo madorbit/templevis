@@ -41,9 +41,6 @@ setup(
     ],
     python_requires=">=3.8",
     install_requires=[
-        'pdf2image>=1.16.3',
-        'opencv-python>=4.8.1.78',
-        'pytesseract>=0.3.10',
         'pandas>=2.1.0',
         'numpy>=1.26.0',
         'pdfplumber>=0.10.2',

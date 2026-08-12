@@ -4,40 +4,27 @@ This directory contains the test suite for TempleVis. The tests are organized by
 
 ## Test Categories
 
-1. **Environment Tests** (`test_environment.py`)
-   - Basic environment setup verification
-   - Tesseract OCR installation check
-   - PDF processing capabilities
-   - OpenCV functionality
-
-2. **PDF Processing Tests** (`test_pdf_processor.py`)
-   - PDF loading and conversion
-   - Page handling
-   - Image preprocessing
-   - Debug output generation
-
-3. **Table Processing Tests** (`test_table_processor.py`)
+1. **Table Processing Tests** (`test_table_processor.py`)
    - Table structure detection
    - Cell extraction
    - Data parsing
    - Time period handling
 
-4. **Name Extraction Tests** (`test_name_extraction.py`)
-   - Worker name detection
-   - Name column processing
-   - Name sorting and validation
-
-5. **Task Code Tests** (`test_task_codes.py`, `test_ini_codes.py`)
+2. **Task Code Tests** (`test_task_codes.py`)
    - Task code identification
    - INI task filtering
    - Time slot mapping
    - Task duration calculation
 
-6. **Text Extraction Tests** (`test_text_extraction.py`)
-   - OCR preprocessing
-   - Text recognition
-   - Character validation
-   - Special character handling
+3. **ODS Output Tests** (`test_ods_output.py`)
+   - ODS workbook generation
+   - Template structure
+   - Sheet and data validation
+
+4. **Integration Tests** (`integration/test_complete_workflow.py`)
+   - End-to-end table parsing workflow
+   - Custom period report generation
+   - Error handling behavior
 
 ## Running Tests
 
@@ -50,8 +37,8 @@ pytest
 
 Run specific test categories:
 ```bash
-pytest tests/test_environment.py    # Environment tests only
-pytest tests/test_pdf_processor.py  # PDF processing tests only
+pytest tests/test_table_processor.py
+pytest tests/test_task_codes.py
 ```
 
 ### Test Markers
@@ -60,9 +47,7 @@ Tests are organized using markers for easier filtering:
 
 ```bash
 pytest -m environment  # Run environment tests
-pytest -m pdf         # Run PDF processing tests
 pytest -m table       # Run table processing tests
-pytest -m names       # Run name extraction tests
 pytest -m tasks       # Run task code tests
 ```
 
@@ -105,10 +90,8 @@ Test data is stored in the `memory-bank` directory:
 
 Available fixtures (defined in `conftest.py`):
 - `test_pdf_path`: Path to test PDF file
-- `pdf_processor`: Initialized PDFTableProcessor
-- `test_image`: Basic test image with text
-- `test_rectangle_image`: Test image with rectangle
-- `pdf_pages`: Converted PDF pages
+- `table_processor`: Initialized PDFTableProcessor
+- `full_table_processor`: Initialized PDFTableProcessor for full test workflows
 - `temp_output_dir`: Temporary output directory
 - `sample_task_data`: Sample task data
 - `sample_period_data`: Sample period data
@@ -134,18 +117,13 @@ Available fixtures (defined in `conftest.py`):
 
 Common issues and solutions:
 
-1. **Tesseract Path Issues**
-   - Verify TESSERACT_PATH in conftest.py
-   - Check Tesseract installation
-
-2. **PDF Processing Errors**
-   - Verify POPPLER_PATH in conftest.py
+1. **PDF Processing Errors**
    - Check PDF file accessibility
 
-3. **Debug Output Issues**
+2. **Debug Output Issues**
    - Ensure debug directories exist
    - Check write permissions
 
-4. **Test Data Missing**
+3. **Test Data Missing**
    - Verify test PDF files in memory-bank
    - Check file paths in conftest.py

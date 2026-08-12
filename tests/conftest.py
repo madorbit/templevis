@@ -7,34 +7,21 @@ It centralizes common test data and setup procedures.
 
 import os
 import pytest
-import cv2
-import numpy as np
-from pdf2image import convert_from_path
-import pytesseract
-from templevis import PDFTableProcessor, PDFProcessor
+from templevis import PDFTableProcessor
 
 # Global test configuration
-TESSERACT_PATH = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-POPPLER_PATH = r'C:\Program Files\poppler-24.08.0\Library\bin'
 TEST_DATA_DIR = os.path.join('memory-bank')
 DEBUG_OUTPUT_DIR = os.path.join('data', 'debug')
 TEST_OUTPUT_DIR = os.path.join('output', 'test')
-
-# Configure Tesseract path
-pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
 
 
 @pytest.fixture(scope="session")
 def test_pdf_path():
     """Fixture providing path to test PDF file."""
-    return os.path.join(TEST_DATA_DIR, 'b&w_wed_4th_shift_23Jul2025.pdf')
-
-@pytest.fixture(scope="session")
-def pdf_processor(test_pdf_path):
-    """Fixture providing initialized PDFProcessor."""
-    processor = PDFProcessor(test_pdf_path)
-    processor.load_pdf()
-    return processor
+    pdf_path = os.path.join(TEST_DATA_DIR, 'b&w_wed_4th_shift_23Jul2025.pdf')
+    if not os.path.exists(pdf_path):
+        pytest.skip(f"Test PDF not found: {pdf_path}")
+    return pdf_path
 
 @pytest.fixture(scope="session")
 def table_processor(test_pdf_path):
@@ -42,42 +29,9 @@ def table_processor(test_pdf_path):
     return PDFTableProcessor(test_pdf_path)
 
 @pytest.fixture(scope="session")
-def full_pdf_processor(test_pdf_path):
-    """Fixture providing initialized PDFProcessor with full PDF."""
-    processor = PDFProcessor(test_pdf_path)
-    processor.load_pdf()
-    return processor
-
-@pytest.fixture(scope="session")
 def full_table_processor(test_pdf_path):
     """Fixture providing initialized PDFTableProcessor with full PDF."""
     return PDFTableProcessor(test_pdf_path)
-
-@pytest.fixture(scope="session")
-def test_image():
-    """Fixture providing a basic test image with text."""
-    image = np.zeros((100, 300), dtype=np.uint8)
-    image.fill(255)  # White background
-    cv2.putText(image, "Test OCR", (50, 50), 
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-    return image
-
-@pytest.fixture(scope="session")
-def test_rectangle_image():
-    """Fixture providing test image with a rectangle."""
-    image = np.zeros((200, 300), dtype=np.uint8)
-    cv2.rectangle(image, (50, 50), (150, 100), 255, 2)
-    return image
-
-@pytest.fixture(scope="session")
-def pdf_pages(test_pdf_path):
-    """Fixture providing converted PDF pages."""
-    return convert_from_path(test_pdf_path, poppler_path=POPPLER_PATH)
-
-@pytest.fixture(scope="session")
-def full_pdf_pages(test_pdf_path):
-    """Fixture providing converted PDF pages from full PDF."""
-    return convert_from_path(test_pdf_path, poppler_path=POPPLER_PATH)
 
 @pytest.fixture(scope="function")
 def temp_output_dir(tmpdir):
@@ -125,8 +79,6 @@ def pytest_collection_modifyitems(items):
         # Add category markers
         if "environment" in item.nodeid:
             item.add_marker(pytest.mark.environment)
-        elif "pdf_processor" in item.nodeid:
-            item.add_marker(pytest.mark.pdf)
         elif "table_processor" in item.nodeid:
             item.add_marker(pytest.mark.table)
         elif "name_extraction" in item.nodeid:

@@ -64,7 +64,7 @@ jobs:
           mkdir -p build/layer/python
 
           pip install --upgrade pip
-          pip install .. -t build/layer/python
+          pip install . -t build/layer/python
 
           test -f build/layer/python/templevis/table_processor.py
           test -f build/layer/python/templevis/excel_generator.py

@@ -44,8 +44,15 @@ jobs:
         run: |
           mkdir -p package
           cd package
-          pip install requests -t .
+          pip install --upgrade pip
+          # Install TempleVis and all runtime dependencies from setup.py.
+          pip install .. -t .
           cp ../src/templevis/lambda/lambda_handler.py .
+
+          # Fail fast if expected package modules are missing from the artifact.
+          test -f templevis/table_processor.py
+          test -f templevis/excel_generator.py
+
           zip -r ../lambda_deployment.zip .
           cd ..
 
@@ -67,7 +74,7 @@ jobs:
               --function-name "${FUNCTION_NAME}" \
               --runtime python3.11 \
               --role "${LAMBDA_EXECUTION_ROLE_ARN}" \
-              --handler templvis.lambda_handler \
+              --handler lambda_handler.lambda_handler \
               --zip-file "fileb://lambda_deployment.zip" \
               --region "${AWS_REGION}"
           fi

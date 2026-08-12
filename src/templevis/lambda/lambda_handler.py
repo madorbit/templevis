@@ -16,6 +16,8 @@ import boto3
 import logging
 import os
 import tempfile
+from email import policy
+from email.parser import BytesParser
 from typing import Tuple, Dict, Any
 from urllib.parse import unquote_plus
 
@@ -319,19 +321,93 @@ def download_from_s3(bucket: str, key: str) -> Tuple[str, str]:
     """
     try:
         logger.info(f"Downloading {key} from {bucket}")
-        
-        # Create temp file
+
+        response = s3_client.get_object(Bucket=bucket, Key=key)
+        object_bytes = response['Body'].read()
+        content_type = response.get('ContentType', '') or ''
+
+        # SES S3Action stores the full MIME email in S3, not a raw PDF. Detect and extract.
+        if looks_like_raw_email(object_bytes, content_type, key):
+            logger.info('Detected SES raw email object; extracting PDF attachment')
+            return extract_pdf_attachment_from_email(object_bytes)
+
+        # Direct S3 upload flow: object already contains the PDF payload.
         temp_dir = tempfile.gettempdir()
-        temp_file = os.path.join(temp_dir, os.path.basename(key))
-        
-        # Download from S3
-        s3_client.download_file(bucket, key, temp_file)
+        filename = os.path.basename(key) or 'input.pdf'
+        temp_file = os.path.join(temp_dir, filename)
+        with open(temp_file, 'wb') as f:
+            f.write(object_bytes)
+
         logger.info(f"Downloaded to {temp_file}")
-        
-        return temp_file, os.path.basename(key)
+        return temp_file, filename
     except Exception as e:
         logger.error(f"Error downloading from S3: {str(e)}")
         raise PDFValidationError(f"Failed to download file from email: {str(e)}")
+
+
+def looks_like_raw_email(content: bytes, content_type: str, key: str) -> bool:
+    """Detect if an S3 object likely contains a raw MIME email from SES."""
+    key_lower = (key or '').lower()
+    if key_lower.endswith('.pdf'):
+        return False
+
+    content_type_lower = (content_type or '').lower()
+    if content_type_lower.startswith('message/') or 'multipart/' in content_type_lower:
+        return True
+
+    head = content[:4096]
+    if b'MIME-Version:' in head and b'Content-Type:' in head:
+        return True
+
+    # Typical SES S3 object keys are under an emails/ prefix.
+    if '/emails/' in f'/{key_lower}' and not content.startswith(b'%PDF-'):
+        return True
+
+    return False
+
+
+def extract_pdf_attachment_from_email(raw_email: bytes) -> Tuple[str, str]:
+    """Parse MIME email bytes and extract the first PDF attachment to /tmp."""
+    try:
+        message = BytesParser(policy=policy.default).parsebytes(raw_email)
+
+        for part in message.walk():
+            content_disposition = part.get_content_disposition()
+            content_type = (part.get_content_type() or '').lower()
+            filename = part.get_filename() or ''
+            filename_lower = filename.lower()
+
+            is_attachment = content_disposition in {'attachment', 'inline'}
+            is_pdf_type = content_type == 'application/pdf'
+            is_pdf_name = filename_lower.endswith('.pdf')
+
+            if not (is_attachment or is_pdf_type or is_pdf_name):
+                continue
+
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+
+            # Ensure extracted payload looks like a PDF file.
+            if not payload.startswith(b'%PDF-') and not (is_pdf_type or is_pdf_name):
+                continue
+
+            safe_name = os.path.basename(filename) if filename else 'attachment.pdf'
+            if not safe_name.lower().endswith('.pdf'):
+                safe_name = f"{safe_name}.pdf"
+
+            temp_file = os.path.join(tempfile.gettempdir(), safe_name)
+            with open(temp_file, 'wb') as f:
+                f.write(payload)
+
+            logger.info('Extracted PDF attachment: %s', safe_name)
+            return temp_file, safe_name
+
+        raise PDFValidationError('No PDF attachment found in inbound email object')
+    except PDFValidationError:
+        raise
+    except Exception as e:
+        raise PDFValidationError(f'Failed to parse email attachment: {str(e)}')
 
 
 def validate_pdf_file(filename: str, filepath: str) -> None:

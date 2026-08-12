@@ -11,6 +11,7 @@ This Lambda function:
 """
 
 import json
+import base64
 import boto3
 import logging
 import os
@@ -31,19 +32,163 @@ logger.setLevel(logging.INFO)
 s3_client = boto3.client('s3')
 ses_client = boto3.client('ses')
 sns_client = boto3.client('sns')
+secrets_client = boto3.client('secretsmanager')
 
 # Configuration
-MAX_PAGES = 5
-MIN_EXPECTED_COLUMNS = 3  # At minimum: names and some task columns
-ALLOWED_FILE_EXTENSION = '.pdf'
-VIRUS_SCAN_ENABLED = os.environ.get('VIRUS_SCAN_ENABLED', 'false').lower() == 'true'
-OUTPUT_BUCKET = os.environ.get('OUTPUT_BUCKET', '')
-FROM_EMAIL = os.environ.get('FROM_EMAIL', '')
+def _to_bool(value: Any, default: bool = False) -> bool:
+    """Parse truthy/falsy string/int/bool values safely."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _to_int(value: Any, default: int) -> int:
+    """Parse integer values safely."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _load_secret_settings() -> Dict[str, Any]:
+    """Load optional runtime settings from AWS Secrets Manager."""
+    secret_id = (
+        os.environ.get('TEMPLEVIS_SETTINGS_SECRET_ID')
+        or os.environ.get('SETTINGS_SECRET_ID')
+    )
+    if not secret_id:
+        return {}
+
+    try:
+        response = secrets_client.get_secret_value(SecretId=secret_id)
+        secret_string = response.get('SecretString')
+
+        if not secret_string and response.get('SecretBinary'):
+            secret_string = base64.b64decode(response['SecretBinary']).decode('utf-8')
+
+        if not secret_string:
+            logger.warning('Secrets Manager secret is empty: %s', secret_id)
+            return {}
+
+        payload = json.loads(secret_string)
+        if not isinstance(payload, dict):
+            logger.warning('Secrets Manager payload is not a JSON object: %s', secret_id)
+            return {}
+
+        logger.info('Loaded runtime settings from Secrets Manager: %s', secret_id)
+        return payload
+    except Exception as e:
+        logger.warning('Failed to load Secrets Manager settings: %s', str(e))
+        return {}
+
+
+def _load_runtime_settings() -> Dict[str, Any]:
+    """Build runtime settings from env vars with optional Secrets Manager override."""
+    settings = {
+        'MAX_PAGES': os.environ.get('MAX_PAGES', '5'),
+        'MIN_EXPECTED_COLUMNS': os.environ.get('MIN_EXPECTED_COLUMNS', '3'),
+        'ALLOWED_FILE_EXTENSION': os.environ.get('ALLOWED_FILE_EXTENSION', '.pdf'),
+        'VIRUS_SCAN_ENABLED': os.environ.get('VIRUS_SCAN_ENABLED', 'false'),
+        'OUTPUT_BUCKET': os.environ.get('OUTPUT_BUCKET', ''),
+        'FROM_EMAIL': os.environ.get('FROM_EMAIL', ''),
+    }
+
+    secret_settings = _load_secret_settings()
+    for key in settings.keys():
+        if key in secret_settings and secret_settings[key] is not None:
+            settings[key] = secret_settings[key]
+
+    return settings
+
+
+_SETTINGS = _load_runtime_settings()
+
+MAX_PAGES = _to_int(_SETTINGS.get('MAX_PAGES'), 5)
+MIN_EXPECTED_COLUMNS = _to_int(_SETTINGS.get('MIN_EXPECTED_COLUMNS'), 3)  # At minimum: names and task columns
+ALLOWED_FILE_EXTENSION = str(_SETTINGS.get('ALLOWED_FILE_EXTENSION', '.pdf')).strip() or '.pdf'
+VIRUS_SCAN_ENABLED = _to_bool(_SETTINGS.get('VIRUS_SCAN_ENABLED'), default=False)
+OUTPUT_BUCKET = str(_SETTINGS.get('OUTPUT_BUCKET', '')).strip()
+FROM_EMAIL = str(_SETTINGS.get('FROM_EMAIL', '')).strip()
 
 
 class PDFValidationError(Exception):
     """Custom exception for PDF validation errors"""
     pass
+
+
+def parse_event_details(event: Dict[str, Any], context: Any) -> Dict[str, str]:
+    """Parse supported event formats and return processing metadata.
+
+    Supported formats:
+    - SNS-wrapped SES receipt event
+    - Direct S3 ObjectCreated notification event
+    """
+    records = event.get('Records') or []
+    if not records:
+        raise ValueError('Event does not contain Records')
+
+    first_record = records[0]
+
+    def _decode_sns_message(raw_message: Any) -> Dict[str, Any]:
+        """Decode SNS message as JSON, with Base64 fallback."""
+        if isinstance(raw_message, dict):
+            return raw_message
+
+        if not isinstance(raw_message, str):
+            raise ValueError('SNS message has unsupported type')
+
+        # Standard SNS payload (plain JSON string)
+        try:
+            return json.loads(raw_message)
+        except json.JSONDecodeError:
+            pass
+
+        # Optional fallback for Base64-encoded JSON payloads
+        try:
+            decoded = base64.b64decode(raw_message).decode('utf-8')
+            return json.loads(decoded)
+        except Exception as e:
+            raise ValueError(f'Unable to decode SNS message payload: {str(e)}')
+
+    # SNS -> SES receipt flow
+    if 'Sns' in first_record:
+        message = first_record['Sns'].get('Message')
+        sns_message = _decode_sns_message(message)
+
+        sender_email = sns_message['mail']['source']
+        message_id = sns_message['mail']['messageId']
+        bucket = sns_message['receipt']['action']['bucketName']
+        key = unquote_plus(sns_message['receipt']['action']['objectKey'])
+
+        return {
+            'sender_email': sender_email,
+            'message_id': message_id,
+            'bucket': bucket,
+            'key': key,
+            'event_source': 'sns-ses'
+        }
+
+    # Direct S3 notification flow
+    if 's3' in first_record:
+        bucket = first_record['s3']['bucket']['name']
+        key = unquote_plus(first_record['s3']['object']['key'])
+        message_id = (
+            first_record['s3']['object'].get('eTag')
+            or first_record.get('responseElements', {}).get('x-amz-request-id')
+            or getattr(context, 'aws_request_id', 'unknown')
+        )
+
+        return {
+            'sender_email': '',
+            'message_id': str(message_id),
+            'bucket': bucket,
+            'key': key,
+            'event_source': 's3'
+        }
+
+    raise ValueError('Unsupported event format. Expected SNS or S3 notification event.')
 
 
 def lambda_handler(event, context):
@@ -74,16 +219,21 @@ def lambda_handler(event, context):
     """
     try:
         logger.info(f"Lambda invoked with event: {json.dumps(event)}")
+
+        event_details = parse_event_details(event, context)
+        sender_email = event_details['sender_email']
+        message_id = event_details['message_id']
+        bucket = event_details['bucket']
+        key = event_details['key']
+        event_source = event_details['event_source']
         
-        # Parse SNS message
-        sns_message = json.loads(event['Records'][0]['Sns']['Message'])
-        
-        sender_email = sns_message['mail']['source']
-        message_id = sns_message['mail']['messageId']
-        bucket = sns_message['receipt']['action']['bucketName']
-        key = unquote_plus(sns_message['receipt']['action']['objectKey'])
-        
-        logger.info(f"Processing email from {sender_email}, S3 key: {key}")
+        logger.info(
+            "Processing source=%s sender=%s bucket=%s key=%s",
+            event_source,
+            sender_email or '<none>',
+            bucket,
+            key
+        )
         
         # Download PDF from S3
         pdf_file, pdf_filename = download_from_s3(bucket, key)
@@ -97,7 +247,10 @@ def lambda_handler(event, context):
             
             # Upload result to S3 and send success email
             s3_output_key = upload_result_to_s3(output_file, message_id)
-            send_success_email(sender_email, message_id, s3_output_key)
+            if sender_email and FROM_EMAIL:
+                send_success_email(sender_email, message_id, s3_output_key)
+            else:
+                logger.info('Skipping success email; sender or FROM_EMAIL not configured for this event')
             
             return {
                 'statusCode': 200,
@@ -110,7 +263,10 @@ def lambda_handler(event, context):
             
         except PDFValidationError as e:
             logger.warning(f"PDF validation failed: {str(e)}")
-            send_error_email(sender_email, message_id, str(e))
+            if sender_email and FROM_EMAIL:
+                send_error_email(sender_email, message_id, str(e))
+            else:
+                logger.info('Skipping error email; sender or FROM_EMAIL not configured for this event')
             return {
                 'statusCode': 400,
                 'body': json.dumps({
@@ -121,8 +277,11 @@ def lambda_handler(event, context):
             }
         except Exception as e:
             logger.error(f"Processing error: {str(e)}", exc_info=True)
-            send_error_email(sender_email, message_id, 
-                           f"An error occurred processing your PDF: {str(e)}")
+            if sender_email and FROM_EMAIL:
+                send_error_email(sender_email, message_id,
+                               f"An error occurred processing your PDF: {str(e)}")
+            else:
+                logger.info('Skipping error email; sender or FROM_EMAIL not configured for this event')
             return {
                 'statusCode': 500,
                 'body': json.dumps({

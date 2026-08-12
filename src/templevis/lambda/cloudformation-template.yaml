@@ -46,6 +46,11 @@ Parameters:
     Default: dev
     AllowedValues: [dev, staging, prod]
 
+  SettingsSecretArn:
+    Type: String
+    Description: Optional Secrets Manager secret ARN containing Lambda runtime settings JSON
+    Default: ''
+
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
@@ -70,6 +75,7 @@ Metadata:
 
 Conditions:
   IsProd: !Equals [!Ref Environment, 'prod']
+  HasSettingsSecretArn: !Not [!Equals [!Ref SettingsSecretArn, '']]
 
 Resources:
   # ============================================================================
@@ -121,6 +127,52 @@ Resources:
     Properties:
       DisplayName: TempleVis Email Notification Topic
       TopicName: !Sub 'templevis-email-notifications-${Environment}'
+
+  EmailNotificationTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref EmailNotificationTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSESPublish
+            Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref EmailNotificationTopic
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
+
+  EmailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref EmailBucketResource
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSESWriteEmailObjects
+            Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action:
+              - s3:PutObject
+            Resource: !Sub '${EmailBucketResource.Arn}/emails/*'
+            Condition:
+              StringEquals:
+                AWS:Referer: !Ref AWS::AccountId
+          - Sid: AllowSESReadBucketAcl
+            Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action:
+              - s3:GetBucketAcl
+            Resource: !GetAtt EmailBucketResource.Arn
+            Condition:
+              StringEquals:
+                AWS:Referer: !Ref AWS::AccountId
 
   # ============================================================================
   # IAM Role for Lambda
@@ -176,6 +228,25 @@ Resources:
                   - logs:PutLogEvents
                 Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*'
 
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !If
+                  - HasSettingsSecretArn
+                  - !Ref SettingsSecretArn
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:templevis*'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 'secretsmanager.${AWS::Region}.amazonaws.com'
+
   # ============================================================================
   # Lambda Layer with dependencies
   # ============================================================================
@@ -226,6 +297,7 @@ Resources:
           OUTPUT_BUCKET: !Sub '${OutputBucket}-${AWS::AccountId}-${AWS::Region}'
           FROM_EMAIL: !Ref FromEmail
           VIRUS_SCAN_ENABLED: !Ref VirusScanEnabled
+          TEMPLEVIS_SETTINGS_SECRET_ID: !Ref SettingsSecretArn
           ENVIRONMENT: !Ref Environment
           LOG_LEVEL: !If [IsProd, INFO, DEBUG]
       Code:

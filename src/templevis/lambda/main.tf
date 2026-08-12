@@ -104,6 +104,12 @@ variable "max_pdf_pages" {
   default     = 5
 }
 
+variable "settings_secret_arn" {
+  description = "Optional Secrets Manager secret ARN containing Lambda runtime settings JSON"
+  type        = string
+  default     = ""
+}
+
 # ============================================================================
 # Data Sources
 # ============================================================================
@@ -160,6 +166,44 @@ resource "aws_s3_bucket_lifecycle_configuration" "email_bucket" {
   }
 }
 
+resource "aws_s3_bucket_policy" "email_bucket_ses" {
+  bucket = aws_s3_bucket.email_bucket.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowSESWriteEmailObjects"
+        Effect = "Allow"
+        Principal = {
+          Service = "ses.amazonaws.com"
+        }
+        Action   = ["s3:PutObject"]
+        Resource = "${aws_s3_bucket.email_bucket.arn}/emails/*"
+        Condition = {
+          StringEquals = {
+            "AWS:Referer" = data.aws_caller_identity.current.account_id
+          }
+        }
+      },
+      {
+        Sid    = "AllowSESReadBucketAcl"
+        Effect = "Allow"
+        Principal = {
+          Service = "ses.amazonaws.com"
+        }
+        Action   = ["s3:GetBucketAcl"]
+        Resource = aws_s3_bucket.email_bucket.arn
+        Condition = {
+          StringEquals = {
+            "AWS:Referer" = data.aws_caller_identity.current.account_id
+          }
+        }
+      }
+    ]
+  })
+}
+
 resource "aws_s3_bucket" "output_bucket" {
   bucket = "templevis-output-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
 
@@ -214,6 +258,30 @@ resource "aws_sns_topic" "email_notifications" {
   tags = {
     Name = "TempleVis Email Notifications"
   }
+}
+
+resource "aws_sns_topic_policy" "allow_ses_publish" {
+  arn = aws_sns_topic.email_notifications.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowSESPublish"
+        Effect = "Allow"
+        Principal = {
+          Service = "ses.amazonaws.com"
+        }
+        Action   = "sns:Publish"
+        Resource = aws_sns_topic.email_notifications.arn
+        Condition = {
+          StringEquals = {
+            "AWS:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      }
+    ]
+  })
 }
 
 # ============================================================================
@@ -292,6 +360,38 @@ resource "aws_iam_role_policy" "lambda_ses_access" {
   })
 }
 
+resource "aws_iam_role_policy" "lambda_secrets_access" {
+  count = var.settings_secret_arn != "" ? 1 : 0
+
+  name = "templevis-lambda-secrets-access"
+  role = aws_iam_role.lambda_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = var.settings_secret_arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "secretsmanager.${var.aws_region}.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+}
+
 # ============================================================================
 # Lambda Function and Layer
 # ============================================================================
@@ -334,6 +434,7 @@ resource "aws_lambda_function" "processor" {
       OUTPUT_BUCKET        = aws_s3_bucket.output_bucket.id
       FROM_EMAIL           = var.from_email
       VIRUS_SCAN_ENABLED   = var.virus_scan_enabled ? "true" : "false"
+      TEMPLEVIS_SETTINGS_SECRET_ID = var.settings_secret_arn
       ENVIRONMENT          = var.environment
       LOG_LEVEL            = var.environment == "prod" ? "INFO" : "DEBUG"
     }

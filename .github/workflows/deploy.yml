@@ -1,0 +1,73 @@
+name: Deploy Lambda Function
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+permissions:
+  id-token: write # Required for OIDC authentication with AWS
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  FUNCTION_NAME: templevis
+  DEPLOY_ROLE_ARN: arn:aws:iam::269038874049:role/GitHubActionsDeployRole
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Debug OIDC Token Claims
+        run: |
+          ACTIONS_ID_TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
+          echo "=== OIDC TOKEN PAYLOAD ==="
+          echo "$ACTIONS_ID_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build Deployment Package
+        run: |
+          mkdir -p package
+          cd package
+          pip install requests -t .
+          cp ../src/templevis/lambda/lambda_handler.py .
+          zip -r ../lambda_deployment.zip .
+          cd ..
+
+      - name: Deploy to AWS Lambda
+        env:
+          LAMBDA_EXECUTION_ROLE_ARN: "arn:aws:iam::269038874049:role/templevis-IAMRoleLambdaExec"
+        run: |
+          # 1. First attempt to update existing code directly
+          echo "Attempting to update existing Lambda function code for: ${FUNCTION_NAME}..."
+          if aws lambda update-function-code \
+            --function-name "${FUNCTION_NAME}" \
+            --zip-file "fileb://lambda_deployment.zip" \
+            --region "${AWS_REGION}"; then
+            
+            echo "Successfully updated function code."
+          else
+            echo "Function code update failed. Creating new Lambda function..."
+            aws lambda create-function \
+              --function-name "${FUNCTION_NAME}" \
+              --runtime python3.11 \
+              --role "${LAMBDA_EXECUTION_ROLE_ARN}" \
+              --handler templvis.lambda_handler \
+              --zip-file "fileb://lambda_deployment.zip" \
+              --region "${AWS_REGION}"
+          fi

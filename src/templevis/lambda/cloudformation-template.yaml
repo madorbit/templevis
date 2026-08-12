@@ -1,0 +1,362 @@
+"""
+AWS CloudFormation Template for TempleVis Lambda Processing Pipeline
+
+This template creates:
+1. S3 buckets for email and processed output
+2. SES receipt rule set for email handling
+3. SNS topic for email notifications
+4. IAM roles and policies for Lambda
+5. Lambda function for PDF processing
+6. Lambda layer with dependencies
+"""
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'TempleVis PDF Processing Lambda Pipeline'
+
+Parameters:
+  EmailBucket:
+    Type: String
+    Description: Name of S3 bucket for received emails
+    Default: templevis-emails
+  
+  OutputBucket:
+    Type: String
+    Description: Name of S3 bucket for processed outputs
+    Default: templevis-output
+  
+  FromEmail:
+    Type: String
+    Description: Verified SES email address to send from (must be verified in SES)
+    AllowedPattern: '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+  
+  ReceiptEmail:
+    Type: String
+    Description: Email address to receive PDF files
+    AllowedPattern: '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+  
+  VirusScanEnabled:
+    Type: String
+    Description: Enable virus scanning (requires ClamAV layer)
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  
+  Environment:
+    Type: String
+    Description: Deployment environment
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "S3 Configuration"
+        Parameters:
+          - EmailBucket
+          - OutputBucket
+      - Label:
+          default: "Email Configuration"
+        Parameters:
+          - FromEmail
+          - ReceiptEmail
+      - Label:
+          default: "Security Options"
+        Parameters:
+          - VirusScanEnabled
+      - Label:
+          default: "Environment"
+        Parameters:
+          - Environment
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, 'prod']
+
+Resources:
+  # ============================================================================
+  # S3 Buckets
+  # ============================================================================
+  
+  EmailBucketResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${EmailBucket}-${AWS::AccountId}-${AWS::Region}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldEmails
+            Status: Enabled
+            ExpirationInDays: 30
+            NoncurrentVersionExpirationInDays: 7
+
+  OutputBucketResource:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${OutputBucket}-${AWS::AccountId}-${AWS::Region}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldOutputs
+            Status: Enabled
+            ExpirationInDays: 90
+            NoncurrentVersionExpirationInDays: 30
+
+  # ============================================================================
+  # SNS Topic for email notifications
+  # ============================================================================
+  
+  EmailNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: TempleVis Email Notification Topic
+      TopicName: !Sub 'templevis-email-notifications-${Environment}'
+
+  # ============================================================================
+  # IAM Role for Lambda
+  # ============================================================================
+  
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'templevis-lambda-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub 'arn:aws:s3:::${EmailBucket}-${AWS::AccountId}-${AWS::Region}/*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                Resource: !Sub 'arn:aws:s3:::${OutputBucket}-${AWS::AccountId}-${AWS::Region}/*'
+        
+        - PolicyName: SESAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: '*'
+        
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*'
+
+  # ============================================================================
+  # Lambda Layer with dependencies
+  # ============================================================================
+  
+  LambdaDependenciesLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: !Sub 'templevis-dependencies-${Environment}'
+      Description: TempleVis dependencies and libraries
+      Content:
+        S3Bucket: !Ref LayerBucket
+        S3Key: templevis-layer.zip
+      CompatibleRuntimes:
+        - python3.11
+        - python3.12
+
+  LayerBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'templevis-lambda-layers-${AWS::AccountId}-${AWS::Region}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ============================================================================
+  # Lambda Function
+  # ============================================================================
+  
+  TemplevisProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'templevis-pdf-processor-${Environment}'
+      Runtime: python3.11
+      Handler: lambda_handler.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      MemorySize: !If [IsProd, 3008, 1024]
+      EphemeralStorage:
+        Size: 10240
+      Layers:
+        - !Ref LambdaDependenciesLayer
+      Environment:
+        Variables:
+          OUTPUT_BUCKET: !Sub '${OutputBucket}-${AWS::AccountId}-${AWS::Region}'
+          FROM_EMAIL: !Ref FromEmail
+          VIRUS_SCAN_ENABLED: !Ref VirusScanEnabled
+          ENVIRONMENT: !Ref Environment
+          LOG_LEVEL: !If [IsProd, INFO, DEBUG]
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: lambda_handler.zip
+
+  LambdaCodeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'templevis-lambda-code-${AWS::AccountId}-${AWS::Region}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ============================================================================
+  # Lambda SNS Trigger
+  # ============================================================================
+  
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TemplevisProcessorFunction
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref EmailNotificationTopic
+
+  LambdaSNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: lambda
+      TopicArn: !Ref EmailNotificationTopic
+      Endpoint: !GetAtt TemplevisProcessorFunction.Arn
+
+  # ============================================================================
+  # SES Receipt Rule Set
+  # ============================================================================
+  
+  ReceiptRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Properties:
+      RuleSetName: !Sub 'templevis-ruleset-${Environment}'
+
+  ReceiptRule:
+    Type: AWS::SES::ReceiptRule
+    Properties:
+      RuleSetName: !Ref ReceiptRuleSet
+      Rule:
+        Name: !Sub 'templevis-receipt-${Environment}'
+        Enabled: true
+        ScanEnabled: true
+        TlsPolicy: Require
+        Recipients:
+          - !Ref ReceiptEmail
+        Actions:
+          - S3Action:
+              BucketName: !Ref EmailBucketResource
+              ObjectKeyPrefix: 'emails/'
+              TopicArn: !Ref EmailNotificationTopic
+          - StopAction:
+              Scope: RuleSet
+              TopicArn: !Ref EmailNotificationTopic
+
+  # ============================================================================
+  # CloudWatch Alarms
+  # ============================================================================
+  
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'templevis-lambda-errors-${Environment}'
+      AlarmDescription: Alert on Lambda processing errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref TemplevisProcessorFunction
+      TreatMissingData: notBreaching
+
+  LambdaThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'templevis-lambda-throttles-${Environment}'
+      AlarmDescription: Alert on Lambda throttling
+      MetricName: Throttles
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref TemplevisProcessorFunction
+      TreatMissingData: notBreaching
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the TempleVis Lambda processor function
+    Value: !GetAtt TemplevisProcessorFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaArn'
+
+  EmailBucketName:
+    Description: Name of the email receipt S3 bucket
+    Value: !Ref EmailBucketResource
+    Export:
+      Name: !Sub '${AWS::StackName}-EmailBucket'
+
+  OutputBucketName:
+    Description: Name of the processed output S3 bucket
+    Value: !Ref OutputBucketResource
+    Export:
+      Name: !Sub '${AWS::StackName}-OutputBucket'
+
+  SNSTopicArn:
+    Description: ARN of the SNS topic for email notifications
+    Value: !Ref EmailNotificationTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-SNSTopic'
+
+  ReceiptRuleSetName:
+    Description: Name of the SES receipt rule set
+    Value: !Ref ReceiptRuleSet
+    Export:
+      Name: !Sub '${AWS::StackName}-RuleSet'

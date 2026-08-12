@@ -13,6 +13,7 @@ permissions:
 env:
   AWS_REGION: us-east-1
   FUNCTION_NAME: templevis
+  LAYER_NAME: templevis-dependencies
   DEPLOY_ROLE_ARN: arn:aws:iam::269038874049:role/GitHubActionsDeployRole
 
 jobs:
@@ -40,21 +41,65 @@ jobs:
           role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Set Deployment Variables
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+          echo "LAYER_BUCKET=templevis-lambda-layers-${ACCOUNT_ID}-${AWS_REGION}" >> "$GITHUB_ENV"
+          echo "LAYER_S3_KEY=layers/templevis-layer-${GITHUB_SHA}.zip" >> "$GITHUB_ENV"
+
+      - name: Validate Layer Bucket Access
+        run: |
+          if aws s3api head-bucket --bucket "${LAYER_BUCKET}" 2>/dev/null; then
+            echo "Layer bucket is accessible: ${LAYER_BUCKET}"
+          else
+            echo "Layer bucket is not accessible: ${LAYER_BUCKET}"
+            echo "Create it outside this workflow or grant bucket access to the deploy role."
+            exit 1
+          fi
+
+      - name: Build and Publish Lambda Layer
+        run: |
+          rm -rf build
+          mkdir -p build/layer/python
+
+          pip install --upgrade pip
+          pip install .. -t build/layer/python
+
+          test -f build/layer/python/templevis/table_processor.py
+          test -f build/layer/python/templevis/excel_generator.py
+
+          cd build/layer
+          zip -r ../templevis-layer.zip .
+          cd ../..
+
+          echo "Layer package size:"
+          du -h build/templevis-layer.zip
+
+          aws s3 cp build/templevis-layer.zip "s3://${LAYER_BUCKET}/${LAYER_S3_KEY}"
+
+          LAYER_VERSION_ARN=$(aws lambda publish-layer-version \
+            --layer-name "${LAYER_NAME}" \
+            --description "TempleVis dependencies ${GITHUB_SHA}" \
+            --compatible-runtimes python3.11 \
+            --content S3Bucket="${LAYER_BUCKET}",S3Key="${LAYER_S3_KEY}" \
+            --query LayerVersionArn \
+            --output text)
+
+          echo "LAYER_VERSION_ARN=${LAYER_VERSION_ARN}" >> "$GITHUB_ENV"
+          echo "Published layer: ${LAYER_VERSION_ARN}"
+
       - name: Build Deployment Package
         run: |
+          rm -rf package
           mkdir -p package
+          cp src/templevis/lambda/lambda_handler.py package/
           cd package
-          pip install --upgrade pip
-          # Install TempleVis and all runtime dependencies from setup.py.
-          pip install .. -t .
-          cp ../src/templevis/lambda/lambda_handler.py .
-
-          # Fail fast if expected package modules are missing from the artifact.
-          test -f templevis/table_processor.py
-          test -f templevis/excel_generator.py
-
           zip -r ../lambda_deployment.zip .
           cd ..
+
+          echo "Function package size:"
+          du -h lambda_deployment.zip
 
       - name: Deploy to AWS Lambda
         env:
@@ -68,6 +113,19 @@ jobs:
             --region "${AWS_REGION}"; then
             
             echo "Successfully updated function code."
+
+            # Wait until function update is complete before config update
+            aws lambda wait function-updated \
+              --function-name "${FUNCTION_NAME}" \
+              --region "${AWS_REGION}"
+
+            # Attach latest dependency layer
+            aws lambda update-function-configuration \
+              --function-name "${FUNCTION_NAME}" \
+              --layers "${LAYER_VERSION_ARN}" \
+              --region "${AWS_REGION}"
+
+            echo "Successfully updated function configuration with layer: ${LAYER_VERSION_ARN}"
           else
             echo "Function code update failed. Creating new Lambda function..."
             aws lambda create-function \
@@ -75,6 +133,9 @@ jobs:
               --runtime python3.11 \
               --role "${LAMBDA_EXECUTION_ROLE_ARN}" \
               --handler lambda_handler.lambda_handler \
+              --layers "${LAYER_VERSION_ARN}" \
               --zip-file "fileb://lambda_deployment.zip" \
               --region "${AWS_REGION}"
+
+            echo "Successfully created function with layer: ${LAYER_VERSION_ARN}"
           fi

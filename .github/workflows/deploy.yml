@@ -142,9 +142,12 @@ jobs:
               --function-name "${FUNCTION_NAME}" \
               --region "${AWS_REGION}"
 
-            # Attach latest dependency layer
+            # Runtime is pinned here too: the layer's compiled deps are cp311 ABI-tagged,
+            # so runtime drift on an existing function breaks imports like _cffi_backend.
             aws lambda update-function-configuration \
               --function-name "${FUNCTION_NAME}" \
+              --runtime python3.11 \
+              --handler lambda_handler.lambda_handler \
               --layers "${LAYER_VERSION_ARN}" \
               --region "${AWS_REGION}"
 

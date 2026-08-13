@@ -144,15 +144,19 @@ def parse_event_details(event: Dict[str, Any], context: Any) -> Dict[str, str]:
         # Standard SNS payload (plain JSON string)
         try:
             return json.loads(raw_message)
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as error:
+            # Bind outside the handler; Python unbinds the `as` name on block exit.
+            json_error = str(error)
 
         # Optional fallback for Base64-encoded JSON payloads
         try:
-            decoded = base64.b64decode(raw_message).decode('utf-8')
+            decoded = base64.b64decode(raw_message, validate=True).decode('utf-8')
             return json.loads(decoded)
-        except Exception as e:
-            raise ValueError(f'Unable to decode SNS message payload: {str(e)}')
+        except Exception:
+            # Report the JSON failure, not the fallback's, since plain JSON is the expected form.
+            raise ValueError(
+                f'SNS message is neither JSON nor Base64-encoded JSON: {json_error}'
+            )
 
     # SNS -> SES receipt flow
     if 'Sns' in first_record:

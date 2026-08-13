@@ -18,8 +18,6 @@ class PDFTableProcessor:
     def __init__(self, pdf_path):
         """Initialize the PDF processor with a PDF file path."""
         self.pdf_path = pdf_path
-        self.debug_dir = os.path.join('data', 'debug')
-        os.makedirs(self.debug_dir, exist_ok=True)
         self.table_data = None
         self.names = []
         self.tasks = []

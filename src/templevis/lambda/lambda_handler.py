@@ -25,7 +25,6 @@ from urllib.parse import unquote_plus
 import sys
 sys.path.insert(0, '/opt/python')
 from templevis.table_processor import PDFTableProcessor
-from templevis.excel_generator import ExcelGenerator
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -606,17 +605,19 @@ def process_pdf(pdf_path: str, message_id: str) -> str:
             raise PDFValidationError("Could not extract table data from PDF")
         
         logger.info(f"Extracted table: {df.shape[0]} rows x {df.shape[1]} columns")
-        
-        # Generate Excel file
-        temp_dir = tempfile.gettempdir()
-        output_file = os.path.join(temp_dir, f"schedule_{message_id}.xlsx")
-        
-        generator = ExcelGenerator(df, processor)
-        generator.generate(output_file)
-        
-        if not os.path.exists(output_file):
+
+        # generate_reports owns the workbook lifecycle and writes schedule.xlsx into output_dir.
+        output_dir = tempfile.mkdtemp(prefix='templevis_')
+        if not processor.generate_reports(output_dir=output_dir, format='xlsx'):
+            raise Exception("Excel report generation failed")
+
+        generated_file = os.path.join(output_dir, 'schedule.xlsx')
+        if not os.path.exists(generated_file):
             raise Exception("Excel file generation failed")
-        
+
+        output_file = os.path.join(output_dir, f"schedule_{message_id}.xlsx")
+        os.rename(generated_file, output_file)
+
         logger.info(f"Generated Excel file: {output_file}")
         return output_file
         

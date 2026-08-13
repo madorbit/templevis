@@ -64,10 +64,33 @@ jobs:
           mkdir -p build/layer/python
 
           pip install --upgrade pip
-          pip install . -t build/layer/python
+
+          # Resolve deps against the Lambda target platform, not the runner's env.
+          # --upgrade is required or pip --target silently skips already-satisfied deps.
+          pip install \
+            --platform manylinux2014_x86_64 \
+            --implementation cp \
+            --python-version 3.11 \
+            --only-binary=:all: \
+            --upgrade \
+            --target build/layer/python \
+            -r requirements-lambda.txt
+
+          # Pure-Python deps and the templevis package itself carry no platform pins.
+          pip install --upgrade --target build/layer/python -r requirements-lambda-pure.txt
+          pip install --no-deps --upgrade --target build/layer/python .
 
           test -f build/layer/python/templevis/table_processor.py
           test -f build/layer/python/templevis/excel_generator.py
+
+          # Fail fast if a compiled dependency did not land in the layer.
+          for module in _cffi_backend pandas numpy pdfplumber odf openpyxl; do
+            if ! compgen -G "build/layer/python/${module}*" > /dev/null; then
+              echo "Missing required module in layer: ${module}"
+              ls build/layer/python
+              exit 1
+            fi
+          done
 
           cd build/layer
           zip -r ../templevis-layer.zip .

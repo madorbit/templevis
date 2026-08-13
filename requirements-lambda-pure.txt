@@ -1,0 +1,4 @@
+# Pure-Python runtime deps for the Lambda layer.
+# These have no binary wheels (sdist-only), so they cannot be installed via the
+# --platform/--only-binary pass in requirements-lambda.txt.
+odfpy>=1.4.1

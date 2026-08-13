@@ -1,0 +1,6 @@
+# Runtime deps installed as manylinux wheels into the Lambda layer.
+# Test tooling is excluded; sdist-only deps live in requirements-lambda-pure.txt.
+pandas>=2.1.0
+numpy>=1.26.0
+pdfplumber>=0.10.2
+openpyxl>=3.1.2

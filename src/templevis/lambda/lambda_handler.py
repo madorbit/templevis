@@ -94,6 +94,7 @@ def _load_runtime_settings() -> Dict[str, Any]:
         'VIRUS_SCAN_ENABLED': os.environ.get('VIRUS_SCAN_ENABLED', 'false'),
         'OUTPUT_BUCKET': os.environ.get('OUTPUT_BUCKET', ''),
         'FROM_EMAIL': os.environ.get('FROM_EMAIL', ''),
+        'DOWNLOAD_URL_EXPIRATION_SECONDS': os.environ.get('DOWNLOAD_URL_EXPIRATION_SECONDS', '3600'),
     }
 
     secret_settings = _load_secret_settings()
@@ -112,6 +113,9 @@ ALLOWED_FILE_EXTENSION = str(_SETTINGS.get('ALLOWED_FILE_EXTENSION', '.pdf')).st
 VIRUS_SCAN_ENABLED = _to_bool(_SETTINGS.get('VIRUS_SCAN_ENABLED'), default=False)
 OUTPUT_BUCKET = str(_SETTINGS.get('OUTPUT_BUCKET', '')).strip()
 FROM_EMAIL = str(_SETTINGS.get('FROM_EMAIL', '')).strip()
+# Presigned URL lifetime is also capped by the Lambda execution role's own
+# temporary credential expiration, so very long values may not be honored.
+DOWNLOAD_URL_EXPIRATION_SECONDS = _to_int(_SETTINGS.get('DOWNLOAD_URL_EXPIRATION_SECONDS'), 3600)
 
 
 class PDFValidationError(Exception):
@@ -656,6 +660,43 @@ def upload_result_to_s3(file_path: str, message_id: str) -> str:
         raise
 
 
+def generate_download_url(s3_key: str) -> str:
+    """
+    Generate a presigned URL so the recipient can download the file without AWS credentials.
+
+    Args:
+        s3_key: S3 object key for the processed file
+
+    Returns:
+        Presigned HTTPS URL, or empty string if OUTPUT_BUCKET is not configured
+    """
+    if not OUTPUT_BUCKET:
+        return ""
+
+    try:
+        return s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': OUTPUT_BUCKET, 'Key': s3_key},
+            ExpiresIn=DOWNLOAD_URL_EXPIRATION_SECONDS
+        )
+    except Exception as e:
+        logger.error(f"Error generating presigned download URL: {str(e)}")
+        return ""
+
+
+def _format_duration(seconds: int) -> str:
+    """Format a duration in seconds as a human-readable string (minutes/hours/days)."""
+    if seconds < 3600:
+        unit, value = 'minute', round(seconds / 60, 1)
+    elif seconds < 86400:
+        unit, value = 'hour', round(seconds / 3600, 1)
+    else:
+        unit, value = 'day', round(seconds / 86400, 1)
+    if value != 1:
+        unit += 's'
+    return f'{value:g} {unit}'
+
+
 def send_success_email(recipient: str, message_id: str, s3_key: str) -> None:
     """
     Send success email with processed file.
@@ -667,15 +708,23 @@ def send_success_email(recipient: str, message_id: str, s3_key: str) -> None:
     """
     try:
         subject = f"TempleVis: Schedule Processed Successfully - {message_id[:8]}"
-        
+
+        download_url = generate_download_url(s3_key)
+        if download_url:
+            download_html = (
+                f'<p><a href="{download_url}">Download your processed Excel file</a> '
+                f'(link expires in {_format_duration(DOWNLOAD_URL_EXPIRATION_SECONDS)}).</p>'
+            )
+        else:
+            download_html = f"<p><strong>File:</strong> s3://{OUTPUT_BUCKET}/{s3_key}</p>"
+
         body_html = f"""
         <html>
             <body>
                 <h2>Schedule Processed Successfully</h2>
                 <p>Your temple worker schedule PDF has been processed successfully.</p>
                 <p><strong>Message ID:</strong> {message_id}</p>
-                <p><strong>File:</strong> s3://{OUTPUT_BUCKET}/{s3_key}</p>
-                <p>Your processed Excel file has been generated and is available in the secure storage.</p>
+                {download_html}
             </body>
         </html>
         """

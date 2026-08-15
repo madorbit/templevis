@@ -4,10 +4,11 @@ AWS Lambda Handler for TempleVis PDF Processing
 This Lambda function:
 1. Receives email notifications with PDF attachments
 2. Downloads PDF from S3
-3. Validates file format (page count, content structure)
-4. Scans for viruses using ClamAV (optional)
-5. Processes PDF using TempleVis
-6. Returns results or error via email
+3. Routes to the initiatory or veil flow based on the S3 object key prefix
+4. Validates file format (page count, content structure)
+5. Scans for viruses using ClamAV (optional)
+6. Processes PDFs using TempleVis
+7. Returns results or error via email
 """
 
 import json
@@ -18,13 +19,14 @@ import os
 import tempfile
 from email import policy
 from email.parser import BytesParser
-from typing import Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any
 from urllib.parse import unquote_plus
 
 # Import the TempleVis modules
 import sys
 sys.path.insert(0, '/opt/python')
 from templevis.table_processor import PDFTableProcessor
+from templevis.staffing_generator import StaffingAssignmentsGenerator
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -95,6 +97,8 @@ def _load_runtime_settings() -> Dict[str, Any]:
         'OUTPUT_BUCKET': os.environ.get('OUTPUT_BUCKET', ''),
         'FROM_EMAIL': os.environ.get('FROM_EMAIL', ''),
         'DOWNLOAD_URL_EXPIRATION_SECONDS': os.environ.get('DOWNLOAD_URL_EXPIRATION_SECONDS', '3600'),
+        'MAX_ATTACHMENTS': os.environ.get('MAX_ATTACHMENTS', '5'),
+        'VEIL_TEMPLATE_PATH': os.environ.get('VEIL_TEMPLATE_PATH', ''),
     }
 
     secret_settings = _load_secret_settings()
@@ -117,10 +121,35 @@ FROM_EMAIL = str(_SETTINGS.get('FROM_EMAIL', '')).strip()
 # temporary credential expiration, so very long values may not be honored.
 DOWNLOAD_URL_EXPIRATION_SECONDS = _to_int(_SETTINGS.get('DOWNLOAD_URL_EXPIRATION_SECONDS'), 3600)
 
+FLOW_INITIATORY = 'initiatory'
+FLOW_VEIL = 'veil'
+MAX_ATTACHMENTS = _to_int(_SETTINGS.get('MAX_ATTACHMENTS'), 5)
+VEIL_TEMPLATE_PATH = str(_SETTINGS.get('VEIL_TEMPLATE_PATH', '')).strip()
+
 
 class PDFValidationError(Exception):
     """Custom exception for PDF validation errors"""
     pass
+
+
+def determine_flow(key: str) -> str:
+    """Route to a processing flow using the S3 object key prefix.
+
+    SES writes each inbound address to its own prefix, so 'veil/' and
+    'initiatory/' in the key identify the requested workflow.
+    """
+    key_lower = (key or '').lower()
+    segments = [segment for segment in key_lower.split('/') if segment]
+
+    for flow in (FLOW_VEIL, FLOW_INITIATORY):
+        if flow in segments or f'{flow}/' in key_lower:
+            return flow
+
+    raise PDFValidationError(
+        'Could not determine which schedule to build from this message. '
+        f'Send initiatory schedules to the initiatory address and veil schedules '
+        f'to the veil address.'
+    )
 
 
 def parse_event_details(event: Dict[str, Any], context: Any) -> Dict[str, str]:
@@ -235,7 +264,9 @@ def lambda_handler(event, context):
         bucket = event_details['bucket']
         key = event_details['key']
         event_source = event_details['event_source']
-        
+        flow = 'unknown'
+        pdf_files: List[Tuple[str, str]] = []
+
         logger.info(
             "Processing source=%s sender=%s bucket=%s key=%s",
             event_source,
@@ -243,33 +274,39 @@ def lambda_handler(event, context):
             bucket,
             key
         )
-        
-        # Download PDF from S3
-        pdf_file, pdf_filename = download_from_s3(bucket, key)
-        
+
         try:
-            # Validate PDF file
-            validate_pdf_file(pdf_filename, pdf_file)
-            
-            # Process PDF
-            output_file = process_pdf(pdf_file, message_id)
-            
-            # Upload result to S3 and send success email
-            s3_output_key = upload_result_to_s3(output_file, message_id)
+            flow = determine_flow(key)
+            logger.info("Routed to %s flow", flow)
+
+            # An inbound email may carry several attachments
+            pdf_files = download_pdfs_from_s3(bucket, key)
+
+            if flow == FLOW_VEIL:
+                output_files = process_veil_flow(pdf_files, message_id)
+            else:
+                output_files = process_initiatory_flow(pdf_files, message_id)
+
+            # Upload results to S3 and send success email
+            s3_output_keys = [
+                upload_result_to_s3(output_file, message_id, flow)
+                for output_file in output_files
+            ]
             if sender_email and FROM_EMAIL:
-                send_success_email(sender_email, message_id, s3_output_key)
+                send_success_email(sender_email, message_id, s3_output_keys, flow)
             else:
                 logger.info('Skipping success email; sender or FROM_EMAIL not configured for this event')
-            
+
             return {
                 'statusCode': 200,
                 'body': json.dumps({
                     'message': 'PDF processed successfully',
+                    'flow': flow,
                     'messageId': message_id,
-                    'outputKey': s3_output_key
+                    'outputKeys': s3_output_keys
                 })
             }
-            
+
         except PDFValidationError as e:
             logger.warning(f"PDF validation failed: {str(e)}")
             if sender_email and FROM_EMAIL:
@@ -280,6 +317,7 @@ def lambda_handler(event, context):
                 'statusCode': 400,
                 'body': json.dumps({
                     'message': 'PDF validation failed',
+                    'flow': flow,
                     'error': str(e),
                     'messageId': message_id
                 })
@@ -295,14 +333,16 @@ def lambda_handler(event, context):
                 'statusCode': 500,
                 'body': json.dumps({
                     'message': 'PDF processing failed',
+                    'flow': flow,
                     'error': str(e),
                     'messageId': message_id
                 })
             }
         finally:
             # Clean up temp files
-            if os.path.exists(pdf_file):
-                os.remove(pdf_file)
+            for pdf_file, _ in pdf_files:
+                if os.path.exists(pdf_file):
+                    os.remove(pdf_file)
 
     except Exception as e:
         logger.error(f"Unhandled lambda error: {str(e)}", exc_info=True)
@@ -315,16 +355,16 @@ def lambda_handler(event, context):
         }
 
 
-def download_from_s3(bucket: str, key: str) -> Tuple[str, str]:
+def download_pdfs_from_s3(bucket: str, key: str) -> List[Tuple[str, str]]:
     """
-    Download PDF from S3 to temporary file.
-    
+    Download the S3 object and return every PDF it carries.
+
     Args:
         bucket: S3 bucket name
         key: S3 object key
-        
+
     Returns:
-        Tuple of (temp_file_path, filename)
+        List of (temp_file_path, filename) tuples
     """
     try:
         logger.info(f"Downloading {key} from {bucket}")
@@ -335,8 +375,8 @@ def download_from_s3(bucket: str, key: str) -> Tuple[str, str]:
 
         # SES S3Action stores the full MIME email in S3, not a raw PDF. Detect and extract.
         if looks_like_raw_email(object_bytes, content_type, key):
-            logger.info('Detected SES raw email object; extracting PDF attachment')
-            return extract_pdf_attachment_from_email(object_bytes)
+            logger.info('Detected SES raw email object; extracting PDF attachments')
+            return extract_pdf_attachments_from_email(object_bytes)
 
         # Direct S3 upload flow: object already contains the PDF payload.
         temp_dir = tempfile.gettempdir()
@@ -346,7 +386,9 @@ def download_from_s3(bucket: str, key: str) -> Tuple[str, str]:
             f.write(object_bytes)
 
         logger.info(f"Downloaded to {temp_file}")
-        return temp_file, filename
+        return [(temp_file, filename)]
+    except PDFValidationError:
+        raise
     except Exception as e:
         logger.error(f"Error downloading from S3: {str(e)}")
         raise PDFValidationError(f"Failed to download file from email: {str(e)}")
@@ -373,10 +415,12 @@ def looks_like_raw_email(content: bytes, content_type: str, key: str) -> bool:
     return False
 
 
-def extract_pdf_attachment_from_email(raw_email: bytes) -> Tuple[str, str]:
-    """Parse MIME email bytes and extract the first PDF attachment to /tmp."""
+def extract_pdf_attachments_from_email(raw_email: bytes) -> List[Tuple[str, str]]:
+    """Parse MIME email bytes and extract every PDF attachment to /tmp."""
     try:
         message = BytesParser(policy=policy.default).parsebytes(raw_email)
+        attachments: List[Tuple[str, str]] = []
+        used_names = set()
 
         for part in message.walk():
             content_disposition = part.get_content_disposition()
@@ -403,14 +447,29 @@ def extract_pdf_attachment_from_email(raw_email: bytes) -> Tuple[str, str]:
             if not safe_name.lower().endswith('.pdf'):
                 safe_name = f"{safe_name}.pdf"
 
-            temp_file = os.path.join(tempfile.gettempdir(), safe_name)
+            # Distinct temp paths, even when two attachments share a filename.
+            unique_name = safe_name
+            suffix = 1
+            while unique_name in used_names:
+                stem, extension = os.path.splitext(safe_name)
+                unique_name = f"{stem}_{suffix}{extension}"
+                suffix += 1
+            used_names.add(unique_name)
+
+            temp_file = os.path.join(tempfile.gettempdir(), unique_name)
             with open(temp_file, 'wb') as f:
                 f.write(payload)
 
-            logger.info('Extracted PDF attachment: %s', safe_name)
-            return temp_file, safe_name
+            logger.info('Extracted PDF attachment: %s', unique_name)
+            attachments.append((temp_file, safe_name))
 
-        raise PDFValidationError('No PDF attachment found in inbound email object')
+        if not attachments:
+            raise PDFValidationError(
+                'No PDF attachment was found in your email. '
+                'Attach the schedule PDF(s) and send the message again.'
+            )
+
+        return attachments
     except PDFValidationError:
         raise
     except Exception as e:
@@ -587,13 +646,106 @@ def scan_for_virus(filepath: str) -> bool:
         raise PDFValidationError(f"Virus scan failed: {str(e)}")
 
 
-def process_pdf(pdf_path: str, message_id: str) -> str:
+def process_initiatory_flow(pdf_files: List[Tuple[str, str]], message_id: str) -> List[str]:
+    """Validate and process each attachment as its own initiatory schedule."""
+    if len(pdf_files) > MAX_ATTACHMENTS:
+        raise PDFValidationError(
+            f"Your email contained {len(pdf_files)} PDF attachments, but at most "
+            f"{MAX_ATTACHMENTS} can be processed at a time. Please split them across "
+            "multiple emails and send them again."
+        )
+
+    output_files = []
+    for index, (pdf_file, filename) in enumerate(pdf_files, start=1):
+        validate_pdf_file(filename, pdf_file)
+        label = f"{message_id}_{index}" if len(pdf_files) > 1 else message_id
+        output_files.append(process_pdf(pdf_file, label))
+
+    return output_files
+
+
+def process_veil_flow(pdf_files: List[Tuple[str, str]], message_id: str) -> List[str]:
+    """Validate both schedules and build the veil staffing assignments workbook."""
+    if len(pdf_files) > MAX_ATTACHMENTS:
+        raise PDFValidationError(
+            f"Your email contained {len(pdf_files)} PDF attachments, but at most "
+            f"{MAX_ATTACHMENTS} can be processed at a time. The veil schedule needs "
+            "exactly two: the brothers schedule and the sisters schedule."
+        )
+
+    schedules: Dict[str, str] = {}
+    unidentified = []
+
+    for pdf_file, filename in pdf_files:
+        validate_pdf_file(filename, pdf_file)
+        audience = classify_schedule_pdf(pdf_file, filename)
+
+        if audience is None:
+            unidentified.append(filename)
+            continue
+        if audience in schedules:
+            raise PDFValidationError(
+                f"Two {audience} schedules were attached ('{filename}' is a duplicate). "
+                "Attach one brothers schedule and one sisters schedule."
+            )
+        schedules[audience] = pdf_file
+
+    missing = [audience for audience in ('brothers', 'sisters') if audience not in schedules]
+    if missing:
+        missing_text = ' and '.join(f"{audience} schedule" for audience in missing)
+        detail = (
+            f" The attached file(s) {', '.join(unidentified)} could not be identified as "
+            "a brothers or sisters schedule."
+            if unidentified else ''
+        )
+        raise PDFValidationError(
+            "The veil staffing sheet needs both the brothers schedule and the sisters "
+            f"schedule. Missing: {missing_text}.{detail} Attach both PDFs and send the "
+            "message again."
+        )
+
+    output_dir = tempfile.mkdtemp(prefix='templevis_veil_')
+    output_file = os.path.join(output_dir, f"veil_staffing_{message_id}.xlsx")
+
+    generator = StaffingAssignmentsGenerator(VEIL_TEMPLATE_PATH)
+    generator.generate(
+        brothers_pdf=schedules['brothers'],
+        sisters_pdf=schedules['sisters'],
+        output_path=output_file,
+    )
+
+    logger.info(f"Generated veil staffing workbook: {output_file}")
+    return [output_file]
+
+
+def classify_schedule_pdf(pdf_path: str, filename: str) -> Any:
+    """Identify a schedule as the 'brothers' or 'sisters' roster, else None."""
+    header = ''
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(pdf_path) as pdf:
+            text = pdf.pages[0].extract_text() or ''
+            header = ' '.join(text.split('\n')[:2]).lower()
+    except Exception as e:
+        logger.warning('Could not read schedule header from %s: %s', filename, str(e))
+
+    for source in (header, (filename or '').lower()):
+        if 'sister' in source:
+            return 'sisters'
+        if 'brother' in source:
+            return 'brothers'
+
+    return None
+
+
+def process_pdf(pdf_path: str, label: str) -> str:
     """
     Process PDF file using TempleVis.
     
     Args:
         pdf_path: Path to PDF file
-        message_id: Email message ID for naming output
+        label: Identifier used for naming the output file
         
     Returns:
         Path to generated Excel file
@@ -619,7 +771,7 @@ def process_pdf(pdf_path: str, message_id: str) -> str:
         if not os.path.exists(generated_file):
             raise Exception("Excel file generation failed")
 
-        output_file = os.path.join(output_dir, f"schedule_{message_id}.xlsx")
+        output_file = os.path.join(output_dir, f"schedule_{label}.xlsx")
         os.rename(generated_file, output_file)
 
         logger.info(f"Generated Excel file: {output_file}")
@@ -632,13 +784,14 @@ def process_pdf(pdf_path: str, message_id: str) -> str:
         raise Exception(f"PDF processing failed: {str(e)}")
 
 
-def upload_result_to_s3(file_path: str, message_id: str) -> str:
+def upload_result_to_s3(file_path: str, message_id: str, flow: str = FLOW_INITIATORY) -> str:
     """
     Upload generated Excel file to S3.
     
     Args:
         file_path: Path to local Excel file
         message_id: Email message ID
+        flow: Processing flow that produced the file
         
     Returns:
         S3 object key
@@ -649,7 +802,7 @@ def upload_result_to_s3(file_path: str, message_id: str) -> str:
     
     try:
         filename = os.path.basename(file_path)
-        s3_key = f"processed/{message_id}/{filename}"
+        s3_key = f"processed/{flow}/{message_id}/{filename}"
         
         logger.info(f"Uploading to s3://{OUTPUT_BUCKET}/{s3_key}")
         s3_client.upload_file(file_path, OUTPUT_BUCKET, s3_key)
@@ -697,31 +850,43 @@ def _format_duration(seconds: int) -> str:
     return f'{value:g} {unit}'
 
 
-def send_success_email(recipient: str, message_id: str, s3_key: str) -> None:
+def send_success_email(recipient: str, message_id: str, s3_keys: List[str], flow: str) -> None:
     """
-    Send success email with processed file.
+    Send success email with links to the processed files.
     
     Args:
         recipient: Recipient email address
         message_id: Email message ID
-        s3_key: S3 object key for the processed file
+        s3_keys: S3 object keys for the processed files
+        flow: Processing flow that produced the files
     """
     try:
-        subject = f"TempleVis: Schedule Processed Successfully - {message_id[:8]}"
+        flow_label = 'Veil Staffing' if flow == FLOW_VEIL else 'Initiatory Schedule'
+        subject = f"TempleVis: {flow_label} Processed Successfully - {message_id[:8]}"
 
-        download_url = generate_download_url(s3_key)
-        if download_url:
+        links = []
+        for s3_key in s3_keys:
+            if not s3_key:
+                continue
+            download_url = generate_download_url(s3_key)
+            name = os.path.basename(s3_key)
+            if download_url:
+                links.append(f'<li><a href="{download_url}">{name}</a></li>')
+            else:
+                links.append(f"<li>s3://{OUTPUT_BUCKET}/{s3_key}</li>")
+
+        if links:
             download_html = (
-                f'<p><a href="{download_url}">Download your processed Excel file</a> '
-                f'(link expires in {_format_duration(DOWNLOAD_URL_EXPIRATION_SECONDS)}).</p>'
+                f"<ul>{''.join(links)}</ul>"
+                f'<p>Links expire in {_format_duration(DOWNLOAD_URL_EXPIRATION_SECONDS)}.</p>'
             )
         else:
-            download_html = f"<p><strong>File:</strong> s3://{OUTPUT_BUCKET}/{s3_key}</p>"
+            download_html = '<p>No output file was stored for this request.</p>'
 
         body_html = f"""
         <html>
             <body>
-                <h2>Schedule Processed Successfully</h2>
+                <h2>{flow_label} Processed Successfully</h2>
                 <p>Your temple worker schedule PDF has been processed successfully.</p>
                 <p><strong>Message ID:</strong> {message_id}</p>
                 {download_html}

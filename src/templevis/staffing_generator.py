@@ -23,7 +23,8 @@ TYPICAL_LOWER_PER_COLUMN = 5    # Typical week leaves the last lower row blank
 TYPICAL_TOTAL = 14              # Brothers assigned to a veil session in a typical week
 
 DEFAULT_TEMPLATE = 'StaffingAssignments.xlsx'
-TEMPLATE_SEARCH_DIRS = ('.', 'memory-bank')
+PACKAGED_TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+TEMPLATE_SEARCH_DIRS = ('.', 'memory-bank', PACKAGED_TEMPLATE_DIR)
 
 
 class StaffingSection:
@@ -221,6 +222,8 @@ class StaffingAssignmentsGenerator:
 
 def _resolve_template(template_path):
     """Locate the template, also checking known project directories."""
+    if not template_path:
+        template_path = DEFAULT_TEMPLATE
     if os.path.exists(template_path):
         return template_path
     if os.path.dirname(template_path):

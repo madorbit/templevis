@@ -28,6 +28,7 @@ setup(
     },
     packages=find_packages(where="src"),
     package_dir={"": "src"},
+    package_data={"templevis": ["data/*.xlsx"]},
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Religion",

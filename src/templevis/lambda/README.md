@@ -189,6 +189,29 @@ Set via CloudFormation parameters or Terraform variables:
 | Table Structure | ≥3 columns | Does not appear to be valid format |
 | Task Codes | Required | Missing recognized task codes |
 
+## Processing Flows
+
+The S3 object key prefix selects the workflow, so each inbound address writes to
+its own prefix:
+
+| Address | Object key prefix | Flow | Attachments |
+|---------|-------------------|------|-------------|
+| initiatory@... | `initiatory/` | Initiatory schedule | 1 to `MAX_ATTACHMENTS`, each processed separately |
+| veil@... | `veil/` | Veil staffing sheet | Exactly two: the brothers and sisters schedules |
+
+If the prefix is missing, the sender receives an error email explaining which
+address to use. The veil flow identifies each attachment from its page header
+("4th Shift Brothers" or "4th Shift Sisters") and replies with an error email
+when one is missing, duplicated, or unrecognized. The initiatory flow replies
+with an error email when more than `MAX_ATTACHMENTS` PDFs are attached.
+
+Additional settings (environment variables or Secrets Manager):
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `MAX_ATTACHMENTS` | `5` | Maximum PDFs accepted per email |
+| `VEIL_TEMPLATE_PATH` | packaged template | Override for StaffingAssignments.xlsx |
+
 ### Customizing Validation
 
 Edit [lambda_handler.py](lambda_handler.py) to change validation rules:

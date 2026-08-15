@@ -82,6 +82,9 @@ jobs:
 
           test -f build/layer/python/templevis/table_processor.py
           test -f build/layer/python/templevis/excel_generator.py
+          test -f build/layer/python/templevis/staffing_generator.py
+          test -f build/layer/python/templevis/veil_extractor.py
+          test -f build/layer/python/templevis/data/StaffingAssignments.xlsx
 
           # Fail fast if a compiled dependency did not land in the layer.
           for module in _cffi_backend pandas numpy pdfplumber odf openpyxl; do

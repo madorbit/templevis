@@ -2,6 +2,9 @@
 include README.md
 include LICENSE
 
+# Packaged templates
+recursive-include src/templevis/data *.xlsx
+
 # Test files
 recursive-include tests *.py
 recursive-include tests/data *

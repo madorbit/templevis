@@ -7,12 +7,43 @@ for extracting schedule information from PDF files.
 
 import os
 from .table_processor import PDFTableProcessor
+from .staffing_generator import StaffingAssignmentsGenerator
+
+def veil(argv):
+    """Generate the veil staffing assignments workbook from schedule PDFs."""
+    import argparse
+    parser = argparse.ArgumentParser(prog='templevis veil')
+    parser.add_argument('--brothers', help='Brother volunteer schedule PDF')
+    parser.add_argument('--sisters', help='Sister volunteer schedule PDF')
+    parser.add_argument('--template', default='StaffingAssignments.xlsx',
+                        help='Staffing assignments template workbook')
+    parser.add_argument('--output', help='Explicit output workbook path')
+    parser.add_argument('--output-dir', default='output',
+                        help='Directory for the generated workbook')
+    args = parser.parse_args(argv)
+
+    if not args.brothers and not args.sisters:
+        parser.error('at least one of --brothers or --sisters is required')
+
+    generator = StaffingAssignmentsGenerator(args.template)
+    output_path = generator.generate(
+        brothers_pdf=args.brothers,
+        sisters_pdf=args.sisters,
+        output_path=args.output,
+        output_dir=args.output_dir,
+    )
+    print(f"Veil staffing assignments written to {output_path}")
 
 def main():
     """Main function demonstrating table processing capabilities."""
     import sys
+    if len(sys.argv) >= 2 and sys.argv[1] == "veil":
+        veil(sys.argv[2:])
+        return
+
     if len(sys.argv) < 3 or sys.argv[1] != "process":
         print("Usage: templevis process <pdf_file>")
+        print("       templevis veil --brothers <pdf> [--sisters <pdf>]")
         sys.exit(1)
         
     # Get PDF path from command line argument
